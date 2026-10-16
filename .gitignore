@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Build files
+build/
+cmake-cache/
+*.o
+*.so
+
+# Temporary files
+*.tmp
+*.log
+*.pcap
+*.pcapng
+
+# Experiment raw logs
+experiments/**/logs/
+
+# Editor settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+!.env.example
