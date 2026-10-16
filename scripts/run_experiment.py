@@ -8,7 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path.home() / "jm/ns-3-dev"
+CODE_ROOT = Path(__file__).resolve().parents[1]
 VAULT = Path.home() / "jm/obsidian"
 
 EXPERIMENTS = {
@@ -26,7 +27,7 @@ EXPERIMENTS = {
 def git_output(*args):
     result = subprocess.run(
         ["git", *args],
-        cwd=ROOT,
+        cwd=CODE_ROOT,
         capture_output=True,
         text=True,
     )

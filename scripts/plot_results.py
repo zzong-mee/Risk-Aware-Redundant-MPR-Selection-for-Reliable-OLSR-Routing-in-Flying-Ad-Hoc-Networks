@@ -8,7 +8,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path.home() / "jm/ns-3-dev"
 RESEARCH = ROOT / "research"
 VAULT = Path.home() / "jm/obsidian"
 

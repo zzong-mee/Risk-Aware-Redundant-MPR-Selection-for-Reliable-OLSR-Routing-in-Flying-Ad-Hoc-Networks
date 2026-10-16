@@ -30,3 +30,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Python temporary files
+*.py.bak
+__pycache__/
+*.pyc
