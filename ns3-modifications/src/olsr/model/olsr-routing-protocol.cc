@@ -1270,10 +1270,13 @@ RoutingProtocol::MprComputation()
                 uncovered.insert(target);
             }
         }
-        NS_LOG_DEBUG("Mode5 AUDIT COVERAGE audit=" << mode5AuditId
-                     << " targets=" << targets.size()
-                     << " uncovered=" << uncovered.size()
-                     << " mprs=" << mprSet.size());
+        NS_LOG_UNCOND("MODE5_COVERAGE"
+                    << " node=" << m_mainAddress
+                    << " audit=" << mode5AuditId
+                    << " targets=" << targets.size()
+                    << " uncovered=" << uncovered.size()
+                    << " mprs=" << mprSet.size());
+        // Failure-only diagnostic: does not alter MPR selection.
         for (const auto& addr : uncovered)
         {
             NS_LOG_DEBUG("Mode5 AUDIT UNCOVERED audit=" << mode5AuditId
