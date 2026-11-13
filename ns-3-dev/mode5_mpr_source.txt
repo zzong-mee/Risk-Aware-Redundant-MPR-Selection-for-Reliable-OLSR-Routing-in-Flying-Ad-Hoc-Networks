@@ -1,0 +1,321 @@
+785:RoutingProtocol::MprComputation()
+786-{
+787-    NS_LOG_FUNCTION(this);
+788-
+789-    // MPR computation should be done for each interface. See section 8.3.1
+790-    // (RFC 3626) for details.
+791-    MprSet mprSet;
+792-
+793-    // N is the subset of neighbors of the node, which are
+794-    // neighbor "of the interface I"
+795-    NeighborSet N;
+796-    for (auto neighbor = m_state.GetNeighbors().begin(); neighbor != m_state.GetNeighbors().end();
+797-         neighbor++)
+798-    {
+799-        if (neighbor->status == NeighborTuple::STATUS_SYM) // I think that we need this check
+800-        {
+801-            N.push_back(*neighbor);
+802-        }
+803-    }
+804-
+805-    // N2 is the set of 2-hop neighbors reachable from "the interface
+806-    // I", excluding:
+807-    // (i)   the nodes only reachable by members of N with willingness Willingness::NEVER
+808-    // (ii)  the node performing the computation
+809-    // (iii) all the symmetric neighbors: the nodes for which there exists a symmetric
+810-    //       link to this node on some interface.
+811-    TwoHopNeighborSet N2;
+812-    for (auto twoHopNeigh = m_state.GetTwoHopNeighbors().begin();
+813-         twoHopNeigh != m_state.GetTwoHopNeighbors().end();
+814-         twoHopNeigh++)
+815-    {
+816-        // excluding:
+817-        // (ii)  the node performing the computation
+818-        if (twoHopNeigh->twoHopNeighborAddr == m_mainAddress)
+819-        {
+820-            continue;
+821-        }
+822-
+823-        //  excluding:
+824-        // (i)   the nodes only reachable by members of N with willingness Willingness::NEVER
+825-        bool ok = false;
+826-        for (auto neigh = N.begin(); neigh != N.end(); neigh++)
+827-        {
+828-            if (neigh->neighborMainAddr == twoHopNeigh->neighborMainAddr)
+829-            {
+830-                ok = (neigh->willingness != Willingness::NEVER);
+831-                break;
+832-            }
+833-        }
+834-        if (!ok)
+835-        {
+836-            continue;
+837-        }
+838-
+839-        // excluding:
+840-        // (iii) all the symmetric neighbors: the nodes for which there exists a symmetric
+841-        //       link to this node on some interface.
+842-        for (auto neigh = N.begin(); neigh != N.end(); neigh++)
+843-        {
+844-            if (neigh->neighborMainAddr == twoHopNeigh->twoHopNeighborAddr)
+845-            {
+846-                ok = false;
+847-                break;
+848-            }
+849-        }
+850-
+851-        if (ok)
+852-        {
+853-            N2.push_back(*twoHopNeigh);
+854-        }
+855-    }
+856-
+857-#ifdef NS3_LOG_ENABLE
+858-    {
+859-        std::ostringstream os;
+860-        os << "[";
+861-        for (auto iter = N2.begin(); iter != N2.end(); iter++)
+862-        {
+863-            auto next = iter;
+864-            next++;
+865-            os << iter->neighborMainAddr << "->" << iter->twoHopNeighborAddr;
+866-            if (next != N2.end())
+867-            {
+868-                os << ", ";
+869-            }
+870-        }
+871-        os << "]";
+872-        NS_LOG_DEBUG("N2: " << os.str());
+873-    }
+874-#endif // NS3_LOG_ENABLE
+875-
+876-    // Mode 5 audit: snapshot all eligible 2-hop targets before coverage changes.
+877-    const TwoHopNeighborSet mode5OriginalN2 = N2;
+878-    const int64_t mode5AuditId = Simulator::Now().GetNanoSeconds();
+879-    uint32_t mode5Round = 0;
+880-    if (m_mprMode == 5)
+881-    {
+882-        NS_LOG_DEBUG("Mode5 AUDIT BEGIN audit=" << mode5AuditId);
+883-    }
+884-
+885-    // 1. Start with an MPR set made of all members of N with
+886-    // N_willingness equal to Willingness::ALWAYS
+887-    for (auto neighbor = N.begin(); neighbor != N.end(); neighbor++)
+888-    {
+889-        if (neighbor->willingness == Willingness::ALWAYS)
+890-        {
+891-            mprSet.insert(neighbor->neighborMainAddr);
+892-            // (not in RFC but I think is needed: remove the 2-hop
+893-            // neighbors reachable by the MPR from N2)
+894-            CoverTwoHopNeighbors(neighbor->neighborMainAddr, N2);
+895-        }
+896-    }
+897-
+898-    // 2. Calculate D(y), where y is a member of N, for all nodes in N.
+899-    // (we do this later)
+900-
+901-    // 3. Add to the MPR set those nodes in N, which are the *only*
+902-    // nodes to provide reachability to a node in N2.
+903-    std::set<Ipv4Address> coveredTwoHopNeighbors;
+904-    for (auto twoHopNeigh = N2.begin(); twoHopNeigh != N2.end(); twoHopNeigh++)
+905-    {
+906-        bool onlyOne = true;
+907-        // try to find another neighbor that can reach twoHopNeigh->twoHopNeighborAddr
+908-        for (auto otherTwoHopNeigh = N2.begin(); otherTwoHopNeigh != N2.end(); otherTwoHopNeigh++)
+909-        {
+910-            if (otherTwoHopNeigh->twoHopNeighborAddr == twoHopNeigh->twoHopNeighborAddr &&
+911-                otherTwoHopNeigh->neighborMainAddr != twoHopNeigh->neighborMainAddr)
+912-            {
+913-                onlyOne = false;
+914-                break;
+915-            }
+916-        }
+917-        if (onlyOne)
+918-        {
+919-            NS_LOG_LOGIC("Neighbor " << twoHopNeigh->neighborMainAddr
+920-                                     << " is the only that can reach 2-hop neigh. "
+921-                                     << twoHopNeigh->twoHopNeighborAddr << " => select as MPR.");
+922-
+923-            mprSet.insert(twoHopNeigh->neighborMainAddr);
+924-
+925-            // take note of all the 2-hop neighbors reachable by the newly elected MPR
+926-            for (auto otherTwoHopNeigh = N2.begin(); otherTwoHopNeigh != N2.end();
+927-                 otherTwoHopNeigh++)
+928-            {
+929-                if (otherTwoHopNeigh->neighborMainAddr == twoHopNeigh->neighborMainAddr)
+930-                {
+931-                    coveredTwoHopNeighbors.insert(otherTwoHopNeigh->twoHopNeighborAddr);
+932-                }
+933-            }
+934-        }
+935-    }
+936-    // Remove the nodes from N2 which are now covered by a node in the MPR set.
+937-    for (auto twoHopNeigh = N2.begin(); twoHopNeigh != N2.end();)
+938-    {
+939-        if (coveredTwoHopNeighbors.find(twoHopNeigh->twoHopNeighborAddr) !=
+940-            coveredTwoHopNeighbors.end())
+941-        {
+942-            // This works correctly only because it is known that twoHopNeigh is reachable by
+943-            // exactly one neighbor, so only one record in N2 exists for each of them. This record
+944-            // is erased here.
+945-            NS_LOG_LOGIC("2-hop neigh. " << twoHopNeigh->twoHopNeighborAddr
+946-                                         << " is already covered by an MPR.");
+947-            twoHopNeigh = N2.erase(twoHopNeigh);
+948-        }
+949-        else
+950-        {
+951-            twoHopNeigh++;
+952-        }
+953-    }
+954-
+955-    // 4. While there exist nodes in N2 which are not covered by at
+956-    // least one node in the MPR set:
+957-    while (N2.begin() != N2.end())
+958-    {
+959-#ifdef NS3_LOG_ENABLE
+960-        {
+961-            std::ostringstream os;
+962-            os << "[";
+963-            for (auto iter = N2.begin(); iter != N2.end(); iter++)
+964-            {
+965-                auto next = iter;
+966-                next++;
+967-                os << iter->neighborMainAddr << "->" << iter->twoHopNeighborAddr;
+968-                if (next != N2.end())
+969-                {
+970-                    os << ", ";
+971-                }
+972-            }
+973-            os << "]";
+974-            NS_LOG_DEBUG("Step 4 iteration: N2=" << os.str());
+975-        }
+976-#endif // NS3_LOG_ENABLE
+977-
+978-        // 4.1. For each node in N, calculate the reachability, i.e., the
+979-        // number of nodes in N2 which are not yet covered by at
+980-        // least one node in the MPR set, and which are reachable
+981-        // through this 1-hop neighbor
+982-        std::map<int, std::vector<const NeighborTuple*>> reachability;
+983-        std::set<int> rs;
+984-        for (auto it = N.begin(); it != N.end(); it++)
+985-        {
+986-            const NeighborTuple& nb_tuple = *it;
+987-            int r = 0;
+988-            for (auto it2 = N2.begin(); it2 != N2.end(); it2++)
+989-            {
+990-                const TwoHopNeighborTuple& nb2hop_tuple = *it2;
+991-                if (nb_tuple.neighborMainAddr == nb2hop_tuple.neighborMainAddr)
+992-                {
+993-                    r++;
+994-                }
+995-            }
+996-            rs.insert(r);
+997-            reachability[r].push_back(&nb_tuple);
+998-        }
+999-
+1000-        // 4.2. Select as a MPR the node with highest N_willingness among
+1001-        // the nodes in N with non-zero reachability. In case of
+1002-        // multiple choice select the node which provides
+1003-        // reachability to the maximum number of nodes in N2. In
+1004-        // case of multiple nodes providing the same amount of
+1005-        // reachability, select the node as MPR whose D(y) is
+1006-        // greater. Remove the nodes from N2 which are now covered
+1007-        // by a node in the MPR set.
+1008-        const NeighborTuple* max = nullptr;
+1009-        int max_r = 0;
+1010-        if (m_mprMode == 5)
+1011-        {
+1012-            ++mode5Round;
+1013-            NS_LOG_DEBUG("Mode5 AUDIT ROUND audit=" << mode5AuditId
+1014-                         << " round=" << mode5Round);
+1015-            // Paper Algorithm 1: among eligible, non-selected symmetric
+1016-            // 1-hop neighbors covering uncovered 2-hop nodes, minimize W.
+1017-            // ETX < 1 is mandatory when the two HELLO reception directions
+1018-            // are known. An absent metric is NOT silently assumed good.
+1019-            Ptr<MobilityModel> selfMobility = GetObject<Node>()->GetObject<MobilityModel>();
+1020-            double bestWeight = std::numeric_limits<double>::infinity();
+1021-            double bestEtx = std::numeric_limits<double>::infinity();
+1022-            for (const auto& candidate : N)
+1023-            {
+1024-                if (candidate.willingness == Willingness::NEVER ||
+1025-                    mprSet.count(candidate.neighborMainAddr))
+1026-                {
+1027-                    continue;
+1028-                }
+1029-                int reach = 0;
+1030-                for (const auto& twoHop : N2)
+1031-                {
+1032-                    if (twoHop.neighborMainAddr == candidate.neighborMainAddr)
+1033-                    {
+1034-                        ++reach;
+1035-                    }
+1036-                }
+1037-                if (reach == 0)
+1038-                {
+1039-                    continue;
+1040-                }
+1041-                const auto infoIt = m_mode5Neighbors.find(candidate.neighborMainAddr);
+1042-                if (infoIt == m_mode5Neighbors.end() || !selfMobility)
+1043-                {
+1044-                    NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
+1045-                                 << " round=" << mode5Round << " neighbor="
+1046-                                 << candidate.neighborMainAddr << " reach=" << reach
+1047-                                 << " eligible=0 reason=missing_info");
+1048-                    continue;
+1049-                }
+1050-                const auto& info = infoIt->second;
+1051-                const double fr = info.helloReceptionRatio;
+1052-                const double rr = info.reverseReceptionRatio;
+1053-                if (!(fr > 0.0 && fr <= 1.0 && rr > 0.0 && rr <= 1.0) ||
+1054-                    !std::isfinite(info.residualEnergy) || info.residualEnergy < 0.0)
+1055-                {
+1056-                    NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
+1057-                                 << " round=" << mode5Round << " neighbor="
+1058-                                 << candidate.neighborMainAddr << " reach=" << reach
+1059-                                 << " eligible=0 reason=invalid_metrics");
+1060-                    continue;
+1061-                }
+1062-                const Vector neighborPosition(info.position[0], info.position[1], info.position[2]);
+1063-                const Vector neighborVelocity(info.velocity[0], info.velocity[1], info.velocity[2]);
+1064-                const double let = CalculateLinkExpirationTime(
+1065-                    selfMobility->GetPosition(), neighborPosition,
+1066-                    selfMobility->GetVelocity(), neighborVelocity, m_letRange);
+1067-                if (std::isnan(let) || let < 0.0)
+1068-                {
+1069-                    NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
+1070-                                 << " round=" << mode5Round << " neighbor="
+1071-                                 << candidate.neighborMainAddr << " reach=" << reach
+1072-                                 << " eligible=0 reason=invalid_let");
+1073-                    continue;
+1074-                }
+1075-                const double etx = std::exp(-let) / (fr * rr);
+1076-                if (!std::isfinite(etx) || etx >= 1.0)
+1077-                {
+1078-                    NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
+1079-                                 << " round=" << mode5Round << " neighbor="
+1080-                                 << candidate.neighborMainAddr << " reach=" << reach
+1081-                                 << " eligible=0 reason=etx_threshold etx=" << etx);
+1082-                    continue;
+1083-                }
+1084-                const uint32_t nodeCount = NodeList::GetNNodes();
+1085-                const double dmax = nodeCount > 1 ? static_cast<double>(nodeCount - 1) : 1.0;
+1086-                const double weight = 0.6 * (1.0 - info.residualEnergy / 100.0) +
+1087-                                      0.4 * (static_cast<double>(info.degree) / dmax);
+1088-                NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
+1089-                             << " round=" << mode5Round << " neighbor="
+1090-                             << candidate.neighborMainAddr << " reach=" << reach
+1091-                             << " eligible=1 weight=" << std::setprecision(17) << weight
+1092-                             << " etx=" << etx);
+1093-                if (weight < bestWeight ||
+1094-                    (weight == bestWeight && (etx < bestEtx ||
+1095-                     (etx == bestEtx &&
+1096-                      (!max || candidate.neighborMainAddr < max->neighborMainAddr)))))
+1097-                {
+1098-                    max = &candidate;
+1099-                    max_r = reach;
+1100-                    bestWeight = weight;
+1101-                    bestEtx = etx;
+1102-                }
+1103-            }
+1104-            if (max)
+1105-            {

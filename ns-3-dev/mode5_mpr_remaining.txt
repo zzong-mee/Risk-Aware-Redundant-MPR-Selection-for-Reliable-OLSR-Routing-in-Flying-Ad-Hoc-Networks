@@ -1,0 +1,191 @@
+                    bestWeight = weight;
+                    bestEtx = etx;
+                }
+            }
+            if (max)
+            {
+                NS_LOG_DEBUG("Mode5 AUDIT CHOICE audit=" << mode5AuditId
+                             << " round=" << mode5Round << " type=SELECT neighbor="
+                             << max->neighborMainAddr);
+                NS_LOG_DEBUG("Mode5 MPR SELECT neighbor=" << max->neighborMainAddr
+                             << " weight=" << bestWeight << " improvedETX=" << bestEtx
+                             << " reach=" << max_r);
+            }
+            else
+            {
+                // Safety fallback, explicitly NOT in paper Algorithm 1:
+                // avoid an infinite loop and preserve 2-hop reachability
+                // during initial HELLO convergence or missing metrics.
+                for (const auto& candidate : N)
+                {
+                    if (candidate.willingness == Willingness::NEVER ||
+                        mprSet.count(candidate.neighborMainAddr))
+                    {
+                        continue;
+                    }
+                    int reach = 0;
+                    for (const auto& twoHop : N2)
+                    {
+                        if (twoHop.neighborMainAddr == candidate.neighborMainAddr)
+                        {
+                            ++reach;
+                        }
+                    }
+                    if (reach > max_r)
+                    {
+                        max = &candidate;
+                        max_r = reach;
+                    }
+                }
+                if (max)
+                {
+                    NS_LOG_DEBUG("Mode5 AUDIT CHOICE audit=" << mode5AuditId
+                                 << " round=" << mode5Round << " type=FALLBACK neighbor="
+                                 << max->neighborMainAddr);
+                    NS_LOG_DEBUG("Mode5 MPR FALLBACK neighbor=" << max->neighborMainAddr
+                                 << " reach=" << max_r << " (no ETX-qualified candidate)");
+                }
+            }
+        }
+        else
+        {
+        for (auto it = rs.begin(); it != rs.end(); it++)
+        {
+            int r = *it;
+            if (r == 0)
+            {
+                continue;
+            }
+            for (auto it2 = reachability[r].begin(); it2 != reachability[r].end(); it2++)
+            {
+                const NeighborTuple* nb_tuple = *it2;
+                if (max == nullptr || nb_tuple->willingness > max->willingness)
+                {
+                    max = nb_tuple;
+                    max_r = r;
+                }
+                else if (nb_tuple->willingness == max->willingness)
+                {
+                    if (r > max_r)
+                    {
+                        max = nb_tuple;
+                        max_r = r;
+                    }
+                    else if (r == max_r)
+                    {
+                        if (Degree(*nb_tuple) > Degree(*max))
+                        {
+                            max = nb_tuple;
+                            max_r = r;
+                        }
+                    }
+                }
+            }
+        }
+
+        }
+
+        if (m_mprMode == 5 && max == nullptr)
+        {
+            NS_LOG_DEBUG("Mode5 AUDIT CHOICE audit=" << mode5AuditId
+                         << " round=" << mode5Round << " type=NONE");
+            NS_LOG_WARN("Mode5 MPR: uncovered 2-hop nodes remain; no eligible relay");
+            break;
+        }
+        if (max != nullptr)
+        {
+            mprSet.insert(max->neighborMainAddr);
+            CoverTwoHopNeighbors(max->neighborMainAddr, N2);
+            NS_LOG_LOGIC(N2.size() << " 2-hop neighbors left to cover!");
+        }
+    }
+
+#ifdef NS3_LOG_ENABLE
+    {
+        std::ostringstream os;
+        os << "[";
+        for (auto iter = mprSet.begin(); iter != mprSet.end(); iter++)
+        {
+            auto next = iter;
+            next++;
+            os << *iter;
+            if (next != mprSet.end())
+            {
+                os << ", ";
+            }
+        }
+        os << "]";
+        NS_LOG_DEBUG("Computed MPR set for node " << m_mainAddress << ": " << os.str());
+    }
+#endif // NS3_LOG_ENABLE
+
+    if (m_mprMode == 5)
+    {
+        std::set<Ipv4Address> targets;
+        std::set<Ipv4Address> uncovered;
+        for (const auto& twoHop : mode5OriginalN2)
+        {
+            targets.insert(twoHop.twoHopNeighborAddr);
+        }
+        for (const auto& target : targets)
+        {
+            bool covered = false;
+            for (const auto& twoHop : mode5OriginalN2)
+            {
+                if (twoHop.twoHopNeighborAddr == target &&
+                    mprSet.count(twoHop.neighborMainAddr))
+                {
+                    covered = true;
+                    break;
+                }
+            }
+            if (!covered)
+            {
+                uncovered.insert(target);
+            }
+        }
+        NS_LOG_DEBUG("Mode5 AUDIT COVERAGE audit=" << mode5AuditId
+                     << " targets=" << targets.size()
+                     << " uncovered=" << uncovered.size()
+                     << " mprs=" << mprSet.size());
+        for (const auto& addr : uncovered)
+        {
+            NS_LOG_DEBUG("Mode5 AUDIT UNCOVERED audit=" << mode5AuditId
+                         << " target=" << addr);
+        }
+        NS_LOG_DEBUG("Mode5 AUDIT END audit=" << mode5AuditId);
+    }
+
+    // Optional fixed-redundancy extension. The standard OLSR selection above
+    // remains unchanged; only additional eligible symmetric 1-hop neighbors
+    // may be selected in mode 1.
+    if (m_mprMode == 1)
+    {
+        // For each eligible 2-hop destination, collect distinct 1-hop relays.
+        // Use the original repository, not N2, which was consumed by the
+        // standard greedy algorithm.
+        std::map<Ipv4Address, std::set<Ipv4Address>> candidates;
+        for (const auto& twoHop : m_state.GetTwoHopNeighbors())
+        {
+            if (twoHop.twoHopNeighborAddr == m_mainAddress)
+            {
+                continue;
+            }
+
+            // A symmetric 1-hop neighbor is not a 2-hop destination.
+            bool isOneHop = false;
+            for (const auto& neighbor : N)
+            {
+                if (neighbor.neighborMainAddr == twoHop.twoHopNeighborAddr)
+                {
+                    isOneHop = true;
+                    break;
+                }
+            }
+            if (isOneHop)
+            {
+                continue;
+            }
+
+            for (const auto& neighbor : N)
+            {

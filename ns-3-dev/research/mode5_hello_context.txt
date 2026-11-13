@@ -1,0 +1,423 @@
+/*
+ * Copyright (c) 2007 INESC Porto
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ *
+ * Author: Gustavo J. A. M. Carneiro  <gjc@inescporto.pt>
+ */
+
+#ifndef OLSR_HEADER_H
+#define OLSR_HEADER_H
+
+#include "olsr-repositories.h"
+
+#include "ns3/header.h"
+#include "ns3/ipv4-address.h"
+#include "ns3/nstime.h"
+
+#include <stdint.h>
+#include <vector>
+
+namespace ns3
+{
+namespace olsr
+{
+
+double EmfToSeconds(uint8_t emf);
+uint8_t SecondsToEmf(double seconds);
+
+/**
+ * @ingroup olsr
+ *
+ * The basic layout of any packet in OLSR is as follows (omitting IP and
+ * UDP headers):
+  @verbatim
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |         Packet Length         |    Packet Sequence Number     |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Message Type |     Vtime     |         Message Size          |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                      Originator Address                       |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Time To Live |   Hop Count   |    Message Sequence Number    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                                                               |
+   :                            MESSAGE                            :
+   |                                                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Message Type |     Vtime     |         Message Size          |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                      Originator Address                       |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Time To Live |   Hop Count   |    Message Sequence Number    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                                                               |
+   :                            MESSAGE                            :
+   |                                                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   :                                                               :
+            (etc.)
+  @endverbatim
+  *
+  * This header only holds the common part of a message group, i.e.,
+  * the first 4 bytes.
+  */
+class PacketHeader : public Header
+{
+  public:
+    PacketHeader();
+    ~PacketHeader() override;
+
+    /**
+     * Set the packet total length.
+     * @param length The packet length.
+     */
+    void SetPacketLength(uint16_t length)
+    {
+        m_packetLength = length;
+    }
+
+    /**
+     * Get the packet total length.
+     * @return The packet length.
+     */
+/*
+ * Copyright (c) 2007 INESC Porto
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ *
+ * Author: Gustavo J. A. M. Carneiro  <gjc@inescporto.pt>
+ */
+
+#include "olsr-header.h"
+
+#include "ns3/assert.h"
+#include "ns3/log.h"
+
+#include <cmath>
+
+#define IPV4_ADDRESS_SIZE 4
+#define OLSR_MSG_HEADER_SIZE 12
+#define OLSR_PKT_HEADER_SIZE 4
+
+namespace ns3
+{
+
+NS_LOG_COMPONENT_DEFINE("OlsrHeader");
+
+namespace olsr
+{
+
+/// Scaling factor used in RFC 3626.
+#define OLSR_C 0.0625
+
+///
+/// @brief Converts a decimal number of seconds to the mantissa/exponent format.
+///
+/// @param seconds decimal number of seconds we want to convert.
+/// @return the number of seconds in mantissa/exponent format.
+///
+uint8_t
+SecondsToEmf(double seconds)
+{
+    int a;
+    int b = 0;
+
+    NS_ASSERT_MSG(seconds >= OLSR_C, "SecondsToEmf - Can not convert a value less than OLSR_C");
+
+    // find the largest integer 'b' such that: T/C >= 2^b
+    for (b = 1; (seconds / OLSR_C) >= (1 << b); ++b)
+    {
+    }
+    NS_ASSERT((seconds / OLSR_C) < (1 << b));
+    b--;
+    NS_ASSERT((seconds / OLSR_C) >= (1 << b));
+
+    // compute the expression 16*(T/(C*(2^b))-1), which may not be a integer
+    double tmp = 16 * (seconds / (OLSR_C * (1 << b)) - 1);
+
+    // round it up.  This results in the value for 'a'
+    a = (int)std::ceil(tmp - 0.5);
+
+    // if 'a' is equal to 16: increment 'b' by one, and set 'a' to 0
+    if (a == 16)
+    {
+        b += 1;
+        a = 0;
+    }
+
+    // now, 'a' and 'b' should be integers between 0 and 15,
+    NS_ASSERT(a >= 0 && a < 16);
+    NS_ASSERT(b >= 0 && b < 16);
+
+    // the field will be a byte holding the value a*16+b
+    return (uint8_t)((a << 4) | b);
+}
+
+///
+/// @brief Converts a number of seconds in the mantissa/exponent format to a decimal number.
+///
+/// @param olsrFormat number of seconds in mantissa/exponent format.
+/// @return the decimal number of seconds.
+///
+double
+EmfToSeconds(uint8_t olsrFormat)
+{
+    int a = (olsrFormat >> 4);
+    int b = (olsrFormat & 0xf);
+    // value = C*(1+a/16)*2^b [in seconds]
+/*
+ * Copyright (c) 2004 Francisco J. Ros
+ * Copyright (c) 2007 INESC Porto
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ *
+ * Authors: Francisco J. Ros  <fjrm@dif.um.es>
+ *          Gustavo J. A. M. Carneiro <gjc@inescporto.pt>
+ */
+
+///
+/// @brief Implementation of OLSR agent and related classes.
+///
+/// This is the main file of this software because OLSR's behaviour is
+/// implemented here.
+///
+
+#define NS_LOG_APPEND_CONTEXT                                                                      \
+    if (GetObject<Node>())                                                                         \
+    {                                                                                              \
+        ns3LogStream << "[node " << GetObject<Node>()->GetId() << "] ";                            \
+    }
+
+#include "olsr-routing-protocol.h"
+
+#include "olsr-repositories.h"
+
+#include "ns3/boolean.h"
+#include "ns3/enum.h"
+#include "ns3/inet-socket-address.h"
+#include "ns3/ipv4-header.h"
+#include "ns3/ipv4-packet-info-tag.h"
+#include "ns3/ipv4-route.h"
+#include "ns3/ipv4-routing-protocol.h"
+#include "ns3/ipv4-routing-table-entry.h"
+#include "ns3/log.h"
+#include "ns3/names.h"
+#include "ns3/simulator.h"
+#include "ns3/socket-factory.h"
+#include "ns3/trace-source-accessor.h"
+#include "ns3/udp-socket-factory.h"
+#include "ns3/uinteger.h"
+#include "ns3/string.h"
+#include "ns3/double.h"
+#include "ns3/mobility-model.h"
+#include "ns3/node-list.h"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <random>
+#include <cstdint>
+#include <vector>
+
+#include <iomanip>
+#include <iostream>
+
+/********** Useful macros **********/
+
+///
+/// @brief Gets the delay between a given time and the current time.
+///
+/// If given time is previous to the current one, then this macro returns
+/// a number close to 0. This is used for scheduling events at a certain moment.
+///
+#define DELAY(time)                                                                                \
+    (((time) < (Simulator::Now())) ? Seconds(0.000001)                                             \
+                                   : (time - Simulator::Now() + Seconds(0.000001)))
+
+///
+/// @brief Period at which a node must cite every link and every neighbor.
+///
+/// We only use this value in order to define OLSR_NEIGHB_HOLD_TIME.
+///
+#define OLSR_REFRESH_INTERVAL m_helloInterval
+
+/********** Holding times **********/
+
+/// Neighbor holding time.
+#define OLSR_NEIGHB_HOLD_TIME Time(3 * OLSR_REFRESH_INTERVAL)
+/// Top holding time.
+#define OLSR_TOP_HOLD_TIME Time(3 * m_tcInterval)
+/// Dup holding time.
+#define OLSR_DUP_HOLD_TIME Seconds(30)
+/// MID holding time.
+#define OLSR_MID_HOLD_TIME Time(3 * m_midInterval)
+/// HNA holding time.
+#define OLSR_HNA_HOLD_TIME Time(3 * m_hnaInterval)
+
+/********** Miscellaneous constants **********/
+
+/// Maximum allowed jitter.
+#define OLSR_MAXJITTER (m_helloInterval.GetSeconds() / 4)
+/// Maximum allowed sequence number.
+#define OLSR_MAX_SEQ_NUM 65535
+/// Random number between [0-OLSR_MAXJITTER] used to jitter OLSR packet transmission.
+#define JITTER (Seconds(m_uniformRandomVariable->GetValue(0, OLSR_MAXJITTER)))
+
+/// Maximum number of messages per packet.
+#define OLSR_MAX_MSGS 64
+
+namespace ns3
+{
+
+NS_LOG_COMPONENT_DEFINE("OlsrRoutingProtocol");
+
+namespace olsr
+RoutingProtocol::SendHello()
+{
+    NS_LOG_FUNCTION(this);
+
+    olsr::MessageHeader msg;
+    Time now = Simulator::Now();
+
+    msg.SetVTime(OLSR_NEIGHB_HOLD_TIME);
+    msg.SetOriginatorAddress(m_mainAddress);
+    msg.SetTimeToLive(1);
+    msg.SetHopCount(0);
+    msg.SetMessageSequenceNumber(GetMessageSequenceNumber());
+    olsr::MessageHeader::Hello& hello = msg.GetHello();
+
+    hello.SetHTime(m_helloInterval);
+    hello.willingness = m_willingness;
+
+    std::vector<olsr::MessageHeader::Hello::LinkMessage>& linkMessages = hello.linkMessages;
+
+    const LinkSet& links = m_state.GetLinks();
+    for (auto link_tuple = links.begin(); link_tuple != links.end(); link_tuple++)
+    {
+        if (!(GetMainAddress(link_tuple->localIfaceAddr) == m_mainAddress &&
+              link_tuple->time >= now))
+        {
+            continue;
+        }
+
+        LinkType linkType;
+        NeighborType neighborType;
+
+        // Establishes link type
+        if (link_tuple->symTime >= now)
+        {
+            linkType = LinkType::SYM_LINK;
+        }
+        else if (link_tuple->asymTime >= now)
+        {
+            linkType = LinkType::ASYM_LINK;
+        }
+        else
+        {
+            linkType = LinkType::LOST_LINK;
+        }
+        // Establishes neighbor type.
+        if (m_state.FindMprAddress(GetMainAddress(link_tuple->neighborIfaceAddr)))
+        {
+            neighborType = NeighborType::MPR_NEIGH;
+            NS_LOG_DEBUG("I consider neighbor " << GetMainAddress(link_tuple->neighborIfaceAddr)
+                                                << " to be MPR_NEIGH.");
+        }
+        else
+        {
+            bool ok = false;
+            for (auto nb_tuple = m_state.GetNeighbors().begin();
+                 nb_tuple != m_state.GetNeighbors().end();
+                 nb_tuple++)
+            {
+                if (nb_tuple->neighborMainAddr == GetMainAddress(link_tuple->neighborIfaceAddr))
+                {
+                    if (nb_tuple->status == NeighborTuple::STATUS_SYM)
+                    {
+                        NS_LOG_DEBUG("I consider neighbor "
+                                     << GetMainAddress(link_tuple->neighborIfaceAddr)
+                                     << " to be SYM_NEIGH.");
+                        neighborType = NeighborType::SYM_NEIGH;
+                    }
+                    else if (nb_tuple->status == NeighborTuple::STATUS_NOT_SYM)
+                    {
+                        neighborType = NeighborType::NOT_NEIGH;
+                        NS_LOG_DEBUG("I consider neighbor "
+                                     << GetMainAddress(link_tuple->neighborIfaceAddr)
+                                     << " to be NOT_NEIGH.");
+                    }
+                    else
+                    {
+                        NS_FATAL_ERROR("There is a neighbor tuple with an unknown status!\n");
+                    }
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok)
+            {
+                NS_LOG_WARN("I don't know the neighbor "
+                            << GetMainAddress(link_tuple->neighborIfaceAddr) << "!!!");
+                continue;
+            }
+        }
+
+        olsr::MessageHeader::Hello::LinkMessage linkMessage;
+        linkMessage.linkCode = (static_cast<uint8_t>(linkType) & 0x03) |
+                               ((static_cast<uint8_t>(neighborType) << 2) & 0x0f);
+        linkMessage.neighborInterfaceAddresses.push_back(link_tuple->neighborIfaceAddr);
+
+        std::vector<Ipv4Address> interfaces =
+            m_state.FindNeighborInterfaces(link_tuple->neighborIfaceAddr);
+
+        linkMessage.neighborInterfaceAddresses.insert(linkMessage.neighborInterfaceAddresses.end(),
+                                                      interfaces.begin(),
+                                                      interfaces.end());
+
+        linkMessages.push_back(linkMessage);
+    }
+    NS_LOG_DEBUG("OLSR HELLO message size: " << int(msg.GetSerializedSize()) << " (with "
+                                             << int(linkMessages.size()) << " link messages)");
+    QueueMessage(msg, JITTER);
+}
+
+void
+RoutingProtocol::SendTc()
+{
+    NS_LOG_FUNCTION(this);
+
+    olsr::MessageHeader msg;
+
+    msg.SetVTime(OLSR_TOP_HOLD_TIME);
+    msg.SetOriginatorAddress(m_mainAddress);
+    msg.SetTimeToLive(255);
+    msg.SetHopCount(0);
+    msg.SetMessageSequenceNumber(GetMessageSequenceNumber());
+
+    olsr::MessageHeader::Tc& tc = msg.GetTc();
+    tc.ansn = m_ansn;
+
+    for (auto mprsel_tuple = m_state.GetMprSelectors().begin();
+         mprsel_tuple != m_state.GetMprSelectors().end();
+         mprsel_tuple++)
+    {
+        tc.neighborAddresses.push_back(mprsel_tuple->mainAddr);
+    }
+    QueueMessage(msg, JITTER);
+}
+
+void
+RoutingProtocol::SendMid()
+{
+    olsr::MessageHeader msg;
+    olsr::MessageHeader::Mid& mid = msg.GetMid();
+
+    // A node which has only a single interface address participating in
+    // the MANET (i.e., running OLSR), MUST NOT generate any MID
+    // message.

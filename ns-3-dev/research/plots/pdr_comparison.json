@@ -1,0 +1,14 @@
+{
+  "experiments": [
+    {
+      "label": "EXP-001\nBasic OLSR",
+      "pdr": 80.0,
+      "run_id": "20261016-173133-476871"
+    },
+    {
+      "label": "EXP-002\nLET Switch",
+      "pdr": 72.0,
+      "run_id": "20261016-165838-268161"
+    }
+  ]
+}
