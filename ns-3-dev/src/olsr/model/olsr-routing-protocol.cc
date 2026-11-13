@@ -873,69 +873,6 @@ RoutingProtocol::MprComputation()
     }
 #endif // NS3_LOG_ENABLE
 
-    // Mode 5 only: apply the paper's LET eligibility test BEFORE mandatory
-    // 2-hop coverage and greedy MPR selection. Modes 0-4 remain untouched.
-    if (m_mprMode == 5)
-    {
-        Ptr<MobilityModel> selfMobility = GetObject<Node>()->GetObject<MobilityModel>();
-        for (auto it = N.begin(); it != N.end();)
-        {
-            bool validLet = false;
-            double let = std::numeric_limits<double>::quiet_NaN();
-            const auto infoIt = m_mode5Neighbors.find(it->neighborMainAddr);
-            if (selfMobility && infoIt != m_mode5Neighbors.end())
-            {
-                const auto& info = infoIt->second;
-                const Vector neighborPosition(info.position[0], info.position[1], info.position[2]);
-                const Vector neighborVelocity(info.velocity[0], info.velocity[1], info.velocity[2]);
-                let = CalculateLinkExpirationTime(selfMobility->GetPosition(), neighborPosition,
-                                                  selfMobility->GetVelocity(), neighborVelocity,
-                                                  m_letRange);
-                validLet = !std::isnan(let) && let >= 0.0;
-            }
-            if (!validLet)
-            {
-                NS_LOG_DEBUG("Mode5 LET FILTER neighbor=" << it->neighborMainAddr
-                             << " let=" << let << " reason=invalid_or_missing_let");
-                it = N.erase(it);
-            }
-            else
-            {
-                ++it;
-            }
-        }
-        // A 2-hop path is eligible only if its 1-hop relay survived LET filtering.
-        for (auto it = N2.begin(); it != N2.end();)
-        {
-            bool eligibleRelay = false;
-            for (const auto& neighbor : N)
-            {
-                if (neighbor.neighborMainAddr == it->neighborMainAddr)
-                {
-                    eligibleRelay = true;
-                    break;
-                }
-            }
-            if (!eligibleRelay)
-            {
-                it = N2.erase(it);
-            }
-            else
-            {
-                ++it;
-            }
-        }
-    }
-
-    // Mode 5 audit: snapshot all eligible 2-hop targets before coverage changes.
-    const TwoHopNeighborSet mode5OriginalN2 = N2;
-    const int64_t mode5AuditId = Simulator::Now().GetNanoSeconds();
-    uint32_t mode5Round = 0;
-    if (m_mprMode == 5)
-    {
-        NS_LOG_DEBUG("Mode5 AUDIT BEGIN audit=" << mode5AuditId);
-    }
-
     // 1. Start with an MPR set made of all members of N with
     // N_willingness equal to Willingness::ALWAYS
     for (auto neighbor = N.begin(); neighbor != N.end(); neighbor++)
@@ -1063,9 +1000,6 @@ RoutingProtocol::MprComputation()
         int max_r = 0;
         if (m_mprMode == 5)
         {
-            ++mode5Round;
-            NS_LOG_DEBUG("Mode5 AUDIT ROUND audit=" << mode5AuditId
-                         << " round=" << mode5Round);
             // Paper Algorithm 1: among eligible, non-selected symmetric
             // 1-hop neighbors covering uncovered 2-hop nodes, minimize W.
             // ETX < 1 is mandatory when the two HELLO reception directions
@@ -1095,10 +1029,6 @@ RoutingProtocol::MprComputation()
                 const auto infoIt = m_mode5Neighbors.find(candidate.neighborMainAddr);
                 if (infoIt == m_mode5Neighbors.end() || !selfMobility)
                 {
-                    NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
-                                 << " round=" << mode5Round << " neighbor="
-                                 << candidate.neighborMainAddr << " reach=" << reach
-                                 << " eligible=0 reason=missing_info");
                     continue;
                 }
                 const auto& info = infoIt->second;
@@ -1107,13 +1037,6 @@ RoutingProtocol::MprComputation()
                 if (!(fr > 0.0 && fr <= 1.0 && rr > 0.0 && rr <= 1.0) ||
                     !std::isfinite(info.residualEnergy) || info.residualEnergy < 0.0)
                 {
-                    NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
-                                 << " round=" << mode5Round << " neighbor="
-                                 << candidate.neighborMainAddr << " reach=" << reach
-                                 << " eligible=0 reason=invalid_metrics"
-                                 << " fr=" << std::setprecision(17) << fr
-                                 << " rr=" << rr
-                                 << " energy=" << info.residualEnergy);
                     continue;
                 }
                 const Vector neighborPosition(info.position[0], info.position[1], info.position[2]);
@@ -1123,34 +1046,17 @@ RoutingProtocol::MprComputation()
                     selfMobility->GetVelocity(), neighborVelocity, m_letRange);
                 if (std::isnan(let) || let < 0.0)
                 {
-                    NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
-                                 << " round=" << mode5Round << " neighbor="
-                                 << candidate.neighborMainAddr << " reach=" << reach
-                                 << " eligible=0 reason=invalid_let");
                     continue;
                 }
                 const double etx = std::exp(-let) / (fr * rr);
                 if (!std::isfinite(etx) || etx >= 1.0)
                 {
-                    NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
-                                 << " round=" << mode5Round << " neighbor="
-                                 << candidate.neighborMainAddr << " reach=" << reach
-                                 << " eligible=0 reason=etx_threshold"
-                                 << " let=" << std::setprecision(17) << let
-                                 << " fr=" << fr
-                                 << " rr=" << rr
-                                 << " etx=" << etx);
                     continue;
                 }
                 const uint32_t nodeCount = NodeList::GetNNodes();
                 const double dmax = nodeCount > 1 ? static_cast<double>(nodeCount - 1) : 1.0;
                 const double weight = 0.6 * (1.0 - info.residualEnergy / 100.0) +
                                       0.4 * (static_cast<double>(info.degree) / dmax);
-                NS_LOG_DEBUG("Mode5 AUDIT CANDIDATE audit=" << mode5AuditId
-                             << " round=" << mode5Round << " neighbor="
-                             << candidate.neighborMainAddr << " reach=" << reach
-                             << " eligible=1 weight=" << std::setprecision(17) << weight
-                             << " etx=" << etx);
                 if (weight < bestWeight ||
                     (weight == bestWeight && (etx < bestEtx ||
                      (etx == bestEtx &&
@@ -1164,114 +1070,41 @@ RoutingProtocol::MprComputation()
             }
             if (max)
             {
-                NS_LOG_DEBUG("Mode5 AUDIT CHOICE audit=" << mode5AuditId
-                             << " round=" << mode5Round << " type=SELECT neighbor="
-                             << max->neighborMainAddr);
                 NS_LOG_DEBUG("Mode5 MPR SELECT neighbor=" << max->neighborMainAddr
                              << " weight=" << bestWeight << " improvedETX=" << bestEtx
                              << " reach=" << max_r);
             }
-
-        }
-        else if (m_mprMode == 3)
-        {
-            // Mode 3: LET-only greedy selection.
-            // Preserve mandatory MPRs and cover every remaining 2-hop node.
-            // No CVaR, risk threshold, hysteresis or backup selection.
-            Ptr<Node> selfNode = GetObject<Node>();
-            Ptr<MobilityModel> own =
-                selfNode ? selfNode->GetObject<MobilityModel>() : nullptr;
-
-            std::map<Ipv4Address, Ptr<MobilityModel>> mobility;
-            for (uint32_t i = 0; i < NodeList::GetNNodes(); ++i)
+            else
             {
-                Ptr<Node> node = NodeList::GetNode(i);
-                Ptr<Ipv4> ip = node->GetObject<Ipv4>();
-                if (!ip) continue;
-                for (uint32_t j = 0; j < ip->GetNInterfaces(); ++j)
+                // Safety fallback, explicitly NOT in paper Algorithm 1:
+                // avoid an infinite loop and preserve 2-hop reachability
+                // during initial HELLO convergence or missing metrics.
+                for (const auto& candidate : N)
                 {
-                    for (uint32_t k = 0; k < ip->GetNAddresses(j); ++k)
+                    if (candidate.willingness == Willingness::NEVER ||
+                        mprSet.count(candidate.neighborMainAddr))
                     {
-                        mobility[ip->GetAddress(j, k).GetLocal()] =
-                            node->GetObject<MobilityModel>();
+                        continue;
+                    }
+                    int reach = 0;
+                    for (const auto& twoHop : N2)
+                    {
+                        if (twoHop.neighborMainAddr == candidate.neighborMainAddr)
+                        {
+                            ++reach;
+                        }
+                    }
+                    if (reach > max_r)
+                    {
+                        max = &candidate;
+                        max_r = reach;
                     }
                 }
-            }
-
-            // MODE3_LET_AUDIT_V1
-            static uint64_t auditRoundId = 0;
-            const uint64_t currentRoundId = ++auditRoundId;
-            static std::ofstream audit("mode3_let_audit.csv");
-            static bool auditHeader = false;
-            if (!auditHeader)
-            {
-                audit << "round_id,time,node,candidate,let,reach,selected\n";
-                auditHeader = true;
-            }
-
-            std::map<Ipv4Address, std::pair<double, int>> auditCandidates;
-            double bestLet = -std::numeric_limits<double>::infinity();
-            int bestReach = -1;
-
-            for (const auto& candidate : N)
-            {
-                if (candidate.willingness == Willingness::NEVER ||
-                    mprSet.count(candidate.neighborMainAddr))
-                    continue;
-
-                int reach = 0;
-                std::set<Ipv4Address> destinations;
-                for (const auto& twoHop : N2)
+                if (max)
                 {
-                    if (twoHop.neighborMainAddr == candidate.neighborMainAddr)
-                        destinations.insert(twoHop.twoHopNeighborAddr);
+                    NS_LOG_DEBUG("Mode5 MPR FALLBACK neighbor=" << max->neighborMainAddr
+                                 << " reach=" << max_r << " (no ETX-qualified candidate)");
                 }
-                reach = static_cast<int>(destinations.size());
-                if (reach == 0) continue;
-
-                double let = -std::numeric_limits<double>::infinity();
-                auto it = mobility.find(candidate.neighborMainAddr);
-
-                if (own && it != mobility.end() && it->second)
-                {
-                    let = CalculateLinkExpirationTime(
-                        own->GetPosition(),
-                        it->second->GetPosition(),
-                        own->GetVelocity(),
-                        it->second->GetVelocity(),
-                        m_letRange);
-                }
-
-                if (std::isnan(let) || let < 0.0)
-                    let = -std::numeric_limits<double>::infinity();
-
-                auditCandidates[candidate.neighborMainAddr] = {let, reach};
-
-                // LET is the primary ranking metric.
-                // Reachability and address are deterministic tie-breakers.
-                if (!max ||
-                    let > bestLet ||
-                    (let == bestLet && reach > bestReach) ||
-                    (let == bestLet && reach == bestReach &&
-                     candidate.neighborMainAddr < max->neighborMainAddr))
-                {
-                    max = &candidate;
-                    max_r = reach;
-                    bestLet = let;
-                    bestReach = reach;
-                }
-            }
-
-            for (const auto& entry : auditCandidates)
-            {
-                audit << currentRoundId << ","
-                      << Simulator::Now().GetSeconds() << ","
-                      << m_mainAddress << ","
-                      << entry.first << ","
-                      << entry.second.first << ","
-                      << entry.second.second << ","
-                      << (max && max->neighborMainAddr == entry.first ? 1 : 0)
-                      << "\n";
             }
         }
         else
@@ -1314,9 +1147,7 @@ RoutingProtocol::MprComputation()
 
         if (m_mprMode == 5 && max == nullptr)
         {
-            NS_LOG_DEBUG("Mode5 AUDIT CHOICE audit=" << mode5AuditId
-                         << " round=" << mode5Round << " type=NONE");
-            NS_LOG_WARN("Mode5 MPR: uncovered 2-hop nodes remain; no ETX-qualified relay (strict paper mode)");
+            NS_LOG_WARN("Mode5 MPR: uncovered 2-hop nodes remain; no eligible relay");
             break;
         }
         if (max != nullptr)
@@ -1345,46 +1176,6 @@ RoutingProtocol::MprComputation()
         NS_LOG_DEBUG("Computed MPR set for node " << m_mainAddress << ": " << os.str());
     }
 #endif // NS3_LOG_ENABLE
-
-    if (m_mprMode == 5)
-    {
-        std::set<Ipv4Address> targets;
-        std::set<Ipv4Address> uncovered;
-        for (const auto& twoHop : mode5OriginalN2)
-        {
-            targets.insert(twoHop.twoHopNeighborAddr);
-        }
-        for (const auto& target : targets)
-        {
-            bool covered = false;
-            for (const auto& twoHop : mode5OriginalN2)
-            {
-                if (twoHop.twoHopNeighborAddr == target &&
-                    mprSet.count(twoHop.neighborMainAddr))
-                {
-                    covered = true;
-                    break;
-                }
-            }
-            if (!covered)
-            {
-                uncovered.insert(target);
-            }
-        }
-        NS_LOG_UNCOND("MODE5_COVERAGE"
-                    << " node=" << m_mainAddress
-                    << " audit=" << mode5AuditId
-                    << " targets=" << targets.size()
-                    << " uncovered=" << uncovered.size()
-                    << " mprs=" << mprSet.size());
-        // Failure-only diagnostic: does not alter MPR selection.
-        for (const auto& addr : uncovered)
-        {
-            NS_LOG_DEBUG("Mode5 AUDIT UNCOVERED audit=" << mode5AuditId
-                         << " target=" << addr);
-        }
-        NS_LOG_DEBUG("Mode5 AUDIT END audit=" << mode5AuditId);
-    }
 
     // Optional fixed-redundancy extension. The standard OLSR selection above
     // remains unchanged; only additional eligible symmetric 1-hop neighbors
@@ -1485,7 +1276,7 @@ RoutingProtocol::MprComputation()
     // Experimental adaptive redundancy (modes 2 and 3).
     // Uses simulation-global NodeList mobility state (oracle), not deployable OLSR.
     // Standard greedy MPR set above is retained; only extra relays are added.
-    if (m_mprMode == 2 || m_mprMode == 4)
+    if (m_mprMode == 2 || m_mprMode == 3 || m_mprMode == 4)
     {
         std::map<Ipv4Address, std::set<Ipv4Address>> candidates;
         for (const auto& twoHop : m_state.GetTwoHopNeighbors())
@@ -1558,51 +1349,6 @@ RoutingProtocol::MprComputation()
                 double total = 0.0;
                 for (uint32_t s = 0; s < tail; ++s) total += losses[s];
                 risks[relay] = total / tail;
-
-                #if 0 // MODE4_PERFORMANCE_BUILD_V1
-// MODE4_CVAR_INDEPENDENT_AUDIT_V1
-                if (m_mprMode == 4)
-                {
-                    static std::ofstream cvarAudit(
-                        "mode4_cvar_audit.csv");
-                    static bool cvarHeader = false;
-                    static uint64_t cvarId = 0;
-
-                    if (!cvarHeader)
-                    {
-                        cvarAudit
-                            << "audit_id,time,node,relay,alpha,"
-                               "scenarios,tail,cpp_cvar,losses\n";
-                        cvarHeader = true;
-                    }
-
-                    ++cvarId;
-
-                    cvarAudit
-                        << cvarId << ","
-                        << std::setprecision(17)
-                        << Simulator::Now().GetSeconds() << ","
-                        << m_mainAddress << ","
-                        << relay << ","
-                        << m_riskAlpha << ","
-                        << losses.size() << ","
-                        << tail << ","
-                        << risks[relay] << ",";
-
-                    for (size_t k = 0; k < losses.size(); ++k)
-                    {
-                        if (k != 0)
-                        {
-                            cvarAudit << ";";
-                        }
-                        cvarAudit << losses[k];
-                    }
-
-                    cvarAudit << "\n";
-                }
-#endif
-
-
             }
         }
         // Modes 2/3 preserve the original threshold rule. Mode 4 tracks
@@ -1611,13 +1357,6 @@ RoutingProtocol::MprComputation()
         {
             // Validate every stored backup against current symmetric 2-hop
             // coverage; stale links cannot be retained by hysteresis.
-            // MODE4_HYSTERESIS_AUDIT_V1
-            // MODE4_THRESHOLD_AUDIT_V1
-            uint32_t auditAddViolations = 0;
-            uint32_t auditKeepViolations = 0;
-            uint32_t auditAdded = 0;
-            uint32_t auditKept = 0;
-            const uint32_t auditPrevious = m_hysteresisBackups.size();
             std::map<Ipv4Address, Ipv4Address> nextBackups;
             for (const auto& entry : candidates)
             {
@@ -1650,15 +1389,6 @@ RoutingProtocol::MprComputation()
                 {
                     mprSet.insert(prior->second);
                     nextBackups[dest] = prior->second;
-                    ++auditKept;
-                    if (safeGreedy ||
-                        greedySelected.empty() ||
-                        greedySelected.size() >= 2 ||
-                        !std::isfinite(minGreedyRisk) ||
-                        minGreedyRisk <= m_riskRemoveThreshold)
-                    {
-                        ++auditKeepViolations;
-                    }
                     continue;
                 }
 
@@ -1684,177 +1414,8 @@ RoutingProtocol::MprComputation()
                 {
                     mprSet.insert(best);
                     nextBackups[dest] = best;
-                    ++auditAdded;
-                    if (!std::isfinite(minGreedyRisk) ||
-                        minGreedyRisk <= m_riskAddThreshold ||
-                        greedySelected.empty() ||
-                        greedySelected.size() >= 2 ||
-                        safeGreedy)
-                    {
-                        ++auditAddViolations;
-                    }
                 }
             }
-
-            #if 0 // MODE4_PERFORMANCE_BUILD_V1
-// MODE4_REMOVE_REASON_AUDIT_V1
-            // Diagnostic only: do not modify MPR selection.
-            static std::ofstream removeAudit("mode4_remove_reasons.csv");
-            static bool removeHeader = false;
-
-            if (!removeHeader)
-            {
-                removeAudit
-                    << "time,node,destination,old_backup,reason,"
-                       "greedy_risk,remove_threshold,add_threshold\n";
-                removeHeader = true;
-            }
-
-            for (const auto& oldEntry : m_hysteresisBackups)
-            {
-                const Ipv4Address dest = oldEntry.first;
-                const Ipv4Address oldBackup = oldEntry.second;
-
-                // A retained destination is not a removal, even if
-                // its backup relay was replaced.
-                if (nextBackups.count(dest))
-                {
-                    continue;
-                }
-
-                std::string reason;
-                double minRisk = std::numeric_limits<double>::infinity();
-
-                auto candidateIt = candidates.find(dest);
-
-                if (candidateIt == candidates.end())
-                {
-                    reason = "DEST_LOST";
-                }
-                else
-                {
-                    const auto& relays = candidateIt->second;
-
-                    if (relays.size() < 2)
-                    {
-                        reason = "NO_ALTERNATIVE";
-                    }
-                    else
-                    {
-                        std::set<Ipv4Address> greedySelected;
-                        bool safeGreedy = false;
-
-                        for (const auto& relay : relays)
-                        {
-                            if (!mprSet.count(relay))
-                            {
-                                continue;
-                            }
-
-                            greedySelected.insert(relay);
-
-                            auto riskIt = risks.find(relay);
-                            if (riskIt == risks.end())
-                            {
-                                continue;
-                            }
-
-                            minRisk = std::min(minRisk, riskIt->second);
-
-                            if (riskIt->second <= m_riskRemoveThreshold)
-                            {
-                                safeGreedy = true;
-                            }
-                        }
-
-                        if (safeGreedy)
-                        {
-                            reason = "SAFE_RISK";
-                        }
-                        else if (greedySelected.size() >= 2)
-                        {
-                            reason = "ALREADY_REDUNDANT";
-                        }
-                        else if (greedySelected.empty())
-                        {
-                            reason = "NO_GREEDY";
-                        }
-                        else if (!relays.count(oldBackup))
-                        {
-                            reason = "BACKUP_INVALID";
-                        }
-                        else if (greedySelected.count(oldBackup))
-                        {
-                            reason = "BACKUP_SELECTED";
-                        }
-                        else if (!risks.count(oldBackup))
-                        {
-                            reason = "RISK_MISSING";
-                        }
-                        else
-                        {
-                            reason = "OTHER";
-                        }
-                    }
-                }
-
-                removeAudit
-                    << Simulator::Now().GetSeconds() << ","
-                    << m_mainAddress << ","
-                    << dest << ","
-                    << oldBackup << ","
-                    << reason << ","
-                    << minRisk << ","
-                    << m_riskRemoveThreshold << ","
-                    << m_riskAddThreshold << "\n";
-            }
-
-            #endif
-
-            const uint32_t auditRemoved =
-                auditPrevious >= auditKept
-                    ? auditPrevious - auditKept
-                    : 0;
-
-            static std::ofstream audit("/dev/null");
-            static bool headerWritten = false;
-
-            if (!headerWritten)
-            {
-                audit << "time,node,previous,added,kept,removed,"
-                         "current,mpr_count\n";
-                headerWritten = true;
-            }
-
-            audit << Simulator::Now().GetSeconds() << ","
-                  << m_mainAddress << ","
-                  << auditPrevious << ","
-                  << auditAdded << ","
-                  << auditKept << ","
-                  << auditRemoved << ","
-                  << nextBackups.size() << ","
-                  << mprSet.size() << "\n";
-
-            static std::ofstream thresholdAudit(
-                "/dev/null");
-            static bool thresholdHeader = false;
-
-            if (!thresholdHeader)
-            {
-                thresholdAudit
-                    << "time,node,added,kept,"
-                       "add_violations,keep_violations\n";
-                thresholdHeader = true;
-            }
-
-            thresholdAudit
-                << Simulator::Now().GetSeconds() << ","
-                << m_mainAddress << ","
-                << auditAdded << ","
-                << auditKept << ","
-                << auditAddViolations << ","
-                << auditKeepViolations << "\n";
-
             m_hysteresisBackups.swap(nextBackups);
         }
         else
@@ -1952,71 +1513,6 @@ RoutingProtocol::MprComputation()
                         << dv.x << ',' << dv.y << ',' << dv.z << '\n';
             }
         }
-    }
-
-
-    // MODE3_COVERAGE_AUDIT_V2
-    // Verify coverage using the original eligible two-hop tuples.
-    // This block does not modify the selected MPR set.
-    if (m_mprMode == 3)
-    {
-        static std::ofstream audit("mode3_coverage_audit.csv");
-        static bool headerWritten = false;
-        static uint64_t auditId = 0;
-
-        if (!headerWritten)
-        {
-            audit << "audit_id,time,node,total_2hop,"
-                     "covered_2hop,uncovered_2hop,mpr_count,"
-                     "uncovered_addresses\n";
-            headerWritten = true;
-        }
-
-        ++auditId;
-
-        std::set<Ipv4Address> targets;
-        std::set<Ipv4Address> covered;
-
-        for (const auto& tuple : mode5OriginalN2)
-        {
-            targets.insert(tuple.twoHopNeighborAddr);
-
-            if (mprSet.count(tuple.neighborMainAddr) != 0)
-            {
-                covered.insert(tuple.twoHopNeighborAddr);
-            }
-        }
-
-        std::set<Ipv4Address> uncovered;
-
-        for (const auto& target : targets)
-        {
-            if (covered.count(target) == 0)
-            {
-                uncovered.insert(target);
-            }
-        }
-
-        audit << auditId << ","
-              << Simulator::Now().GetSeconds() << ","
-              << m_mainAddress << ","
-              << targets.size() << ","
-              << covered.size() << ","
-              << uncovered.size() << ","
-              << mprSet.size() << ",";
-
-        bool first = true;
-        for (const auto& address : uncovered)
-        {
-            if (!first)
-            {
-                audit << ";";
-            }
-            audit << address;
-            first = false;
-        }
-
-        audit << "\n";
     }
 
     m_state.SetMprSet(mprSet);
@@ -2522,20 +2018,6 @@ RoutingProtocol::ProcessTc(const olsr::MessageHeader& msg, const Ipv4Address& se
     const olsr::MessageHeader::Tc& tc = msg.GetTc();
     Time now = Simulator::Now();
 
-    if (m_mprMode == 5 && tc.hasMode5Extension)
-    {
-        NS_LOG_DEBUG("Mode5 TC RX originator=" << msg.GetOriginatorAddress()
-                     << " ansn=" << tc.ansn << " entries=" << tc.mode5Metrics.size());
-        for (const auto& metric : tc.mode5Metrics)
-        {
-            NS_LOG_DEBUG("Mode5 TC ENTRY originator=" << msg.GetOriginatorAddress()
-                         << " neighbor=" << metric.neighbor
-                         << " improvedETX=" << metric.improvedEtx
-                         << " energy=" << metric.residualEnergy
-                         << " weight=" << metric.weight);
-        }
-    }
-
     // 1. If the sender interface of this message is not in the symmetric
     // 1-hop neighborhood of this node, the message MUST be discarded.
     const LinkTuple* link_tuple = m_state.FindSymLinkTuple(senderIface, now);
@@ -2921,7 +2403,7 @@ RoutingProtocol::SendHello()
         // Ordered map iteration gives deterministic truncation at 15 entries.
         for (const auto& entry : m_mode5Neighbors)
         {
-            if (hello.mode5ReceptionRatios.size() >= 29)
+            if (hello.mode5ReceptionRatios.size() >= 15)
             {
                 break;
             }
@@ -3048,46 +2530,6 @@ RoutingProtocol::SendTc()
          mprsel_tuple++)
     {
         tc.neighborAddresses.push_back(mprsel_tuple->mainAddr);
-    }
-    if (m_mprMode == 5)
-    {
-        tc.hasMode5Extension = true;
-        Ptr<MobilityModel> selfMobility = GetObject<MobilityModel>();
-        const uint32_t nodeCount = NodeList::GetNNodes();
-        const double dmax = nodeCount > 1 ? static_cast<double>(nodeCount - 1) : 1.0;
-        for (const auto& neighbor : tc.neighborAddresses)
-        {
-            olsr::MessageHeader::Tc::Mode5Metric metric;
-            metric.neighbor = neighbor;
-            const auto found = m_mode5Neighbors.find(neighbor);
-            if (found != m_mode5Neighbors.end())
-            {
-                const auto& info = found->second;
-                metric.residualEnergy = info.residualEnergy;
-                if (info.residualEnergy >= 0.0 && std::isfinite(info.residualEnergy))
-                {
-                    metric.weight = 0.6 * (1.0 - info.residualEnergy / 100.0) +
-                                    0.4 * (static_cast<double>(info.degree) / dmax);
-                }
-                if (selfMobility && info.helloReceptionRatio > 0.0 &&
-                    info.reverseReceptionRatio > 0.0)
-                {
-                    const Vector position(info.position[0], info.position[1], info.position[2]);
-                    const Vector velocity(info.velocity[0], info.velocity[1], info.velocity[2]);
-                    const double let = CalculateLinkExpirationTime(
-                        selfMobility->GetPosition(), position,
-                        selfMobility->GetVelocity(), velocity, m_letRange);
-                    if (!std::isnan(let) && let >= 0.0)
-                    {
-                        metric.improvedEtx = std::exp(-let) /
-                            (info.helloReceptionRatio * info.reverseReceptionRatio);
-                    }
-                }
-            }
-            tc.mode5Metrics.push_back(metric);
-        }
-        NS_LOG_DEBUG("Mode5 TC TX originator=" << m_mainAddress
-                     << " ansn=" << tc.ansn << " entries=" << tc.mode5Metrics.size());
     }
     QueueMessage(msg, JITTER);
 }
