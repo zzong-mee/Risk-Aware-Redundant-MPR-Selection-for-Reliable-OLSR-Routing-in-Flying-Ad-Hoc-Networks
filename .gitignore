@@ -35,3 +35,21 @@ Thumbs.db
 *.py.bak
 __pycache__/
 *.pyc
+
+# ns-3 build outputs
+ns-3-dev/build/
+ns-3-dev/cmake-cache/
+ns-3-dev/results/
+ns-3-dev/experiments/
+ns-3-dev/__pycache__/
+ns-3-dev/.vscode/
+
+# Generated data and backups
+ns-3-dev/*.csv
+ns-3-dev/*.zip
+ns-3-dev/*.bak
+ns-3-dev/*.log
+ns-3-dev/**/*.bak
+ns-3-dev/**/*.log
+ns-3-dev/**/*.csv
+ns-3-dev/**/*.zip
